@@ -1,6 +1,4 @@
 ---
-
----
 title: "Self-Assessment vs. Clinical-Assessment Models for Thyroid Cancer"
 author: "Dan Huang, Yuchen Li, Zhenzhong Zhang, Evan Rhodes"
 format:
@@ -52,13 +50,30 @@ data <- read.csv(data_file)
 #| label: setup
 # Load required packages
 suppressPackageStartupMessages({
-  library(tidyverse)
-  library(broom)
-  library(broom.mixed)
-  library(geepack)
-  library(lme4)
-  library(scales)
-  library(MASS)      # for glm.nb
+    library(tidyverse)
+    library(broom)
+    library(broom.mixed)
+    library(geepack)
+    library(lme4)
+    library(scales)
+    library(MASS)      # for glm.nb
+    library(dplyr)
+    library(tidyr)
+    library(ggplot2)
+    library(knitr)
+    library(dplyr)
+    library(lme4)         # For GLMM
+    library(broom.mixed)  # For tidying model results
+    library(ggplot2)      # For plotting
+    library(knitr)        # For kable tables
+    library(gridExtra)    # For arranging plots
+    library(car) 
+    library(ggplot2)
+library(dplyr)
+       library(lme4)
+library(lattice)
+        library(dplyr)
+library(ggplot2)
 })
 ```
 
@@ -67,11 +82,11 @@ suppressPackageStartupMessages({
 # Load CSV file
 
 # Check for missing values - no missing values! Proceed w/ full sample for analysis
-sum(is.na(df))
+sum(is.na(data))
 
 # Limit to only the predictors we're interested in, center & scale numeric features 
 clinicdata <- data |>
-  select(Patient_ID, Visit_Number, Nodule_Size_mm, Shape_Score, Margin_Sharpness, 
+  dplyr::select(Patient_ID, Visit_Number, Nodule_Size_mm, Shape_Score, Margin_Sharpness, 
          Echogenicity_Index, Calcification_Presence, Texture_Entropy, 
          Capsular_Invasion_Indicator, TSH_Risk_Level, TPOAb_Probability,
          Thyroglobulin_Level_Predicted, Hormonal_Change_Rate, Diagnosis_Label) |>
@@ -84,6 +99,17 @@ clinicdata <- data |>
   mutate(Patient_ID = as.factor(Patient_ID), 
          Calcification_Presence = as.factor(Calcification_Presence),
          Capsular_Invasion_Indicator = as.factor(Capsular_Invasion_Indicator))
+
+# Define model formula to use across GEE, GLM, & GLMM
+modformula <- Diagnosis_Label ~ Visit_Number + Nodule_Size_mm + Shape_Score + 
+              Margin_Sharpness + Echogenicity_Index + Calcification_Presence + 
+              Texture_Entropy + Capsular_Invasion_Indicator + TSH_Risk_Level + 
+              TPOAb_Probability + Thyroglobulin_Level_Predicted + Hormonal_Change_Rate
+
+glmformula <- Diagnosis_Label ~  Nodule_Size_mm + Shape_Score + 
+              Margin_Sharpness + Echogenicity_Index + Calcification_Presence + 
+              Texture_Entropy + Capsular_Invasion_Indicator + TSH_Risk_Level + 
+              TPOAb_Probability + Thyroglobulin_Level_Predicted + Hormonal_Change_Rate
 
 dat <- data %>%
   mutate(
@@ -332,8 +358,8 @@ plot_pearson <- function(model, name) {
     theme_minimal()
 }
 
-plot_pearson_time <- function(model, name) {
-  df <- data.frame(Fitted = dat$Visit_Number, Resid = residuals(model, type = "pearson"))
+plot_pearson_time <- function(model, name, data) {
+  df <- data.frame(Fitted = data$Visit_Number, Resid = residuals(model, type = "pearson"))
   ggplot(df, aes(x = Fitted, y = Resid)) +
     geom_point(alpha = 0.1) +
     geom_hline(yintercept = 0, linetype = "dashed") +
@@ -343,7 +369,7 @@ plot_pearson_time <- function(model, name) {
 }
 plot_qq_re(glmm_model1, "Model 1")
 plot_pearson(glmm_model1, "Model 1")
-plot_pearson_time(glmm_model1, "Model 1")
+plot_pearson_time(glmm_model1, "Model 1", dat)
 ```
 
 Figure 3: \[Interpretation\]
@@ -376,7 +402,7 @@ glm_table <- tidy(glm_base, conf.int = TRUE) |>
     OR_low = exp(conf.low),
     OR_high = exp(conf.high)
   ) |>
-  select(term, estimate, std.error, statistic, p.value,
+  dplyr::select(term, estimate, std.error, statistic, p.value,
                 OR, OR_low, OR_high)
 
 glm_table |>
@@ -509,7 +535,7 @@ gee_ar_table <- broom::tidy(gee_ar, conf.int = TRUE) %>%
     OR_low = exp(conf.low),                     
     OR_high = exp(conf.high)                     
   ) %>%
-  select(
+  dplyr::select(
     term,                                      
     estimate,                                   
     std.error,                                  
@@ -616,10 +642,10 @@ print(paste("ICC:", round(icc, 3)))
 Figure 7: \[Interpretation\]
 
 ```{r}
-#| label GLMM-Diagnosis
+#| label: GLMM-Diagnosis
 plot_qq_re(glmm_model2, "Model 2")
 plot_pearson(glmm_model2, "Model 2")
-plot_pearson_time(glmm_model2, "Model 2")
+plot_pearson_time(glmm_model2, "Model 2",clinicdata_base)
 ```
 
 ER NOTES: Discuss no variability in outcome causes GEE to fail (working correlations =1, all estimates close to 0 -\> all odds ratios =1); since very little within-person variability, GEE not appropriate GLM model seems to fit, but underestimating probability of malignancy in those who have it (about 17-18% prevalence of malignancy among the 80,000 participants)
