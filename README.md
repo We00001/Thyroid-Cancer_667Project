@@ -1,3 +1,4 @@
 # Thyroid-Cancer_667Project
-title: "Self-Assessment vs. Clinical-Assessment Models for Thyroid Cancer"
-author: "Dan Huang, Yuchen Li, Zhenzhong Zhang, & Evan Rhodes"
+
+## Title: "Self-Assessment vs. Clinical-Assessment Models for Thyroid Cancer"
+## Author: "Dan Huang, Yuchen Li, Zhenzhong Zhang, & Evan Rhodes"
