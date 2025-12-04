@@ -56,24 +56,11 @@ suppressPackageStartupMessages({
     library(geepack)
     library(lme4)
     library(scales)
-    library(MASS)      # for glm.nb
-    library(dplyr)
-    library(tidyr)
-    library(ggplot2)
+    library(MASS)
+    library(gridExtra)
+    library(car)
+    library(lattice)
     library(knitr)
-    library(dplyr)
-    library(lme4)         # For GLMM
-    library(broom.mixed)  # For tidying model results
-    library(ggplot2)      # For plotting
-    library(knitr)        # For kable tables
-    library(gridExtra)    # For arranging plots
-    library(car) 
-    library(ggplot2)
-library(dplyr)
-       library(lme4)
-library(lattice)
-        library(dplyr)
-library(ggplot2)
 })
 ```
 
@@ -192,7 +179,7 @@ GLMM: \[Steps\] \[Assumptions\] \[diagnostics\]
 Table 1: Logistic GLM Exponentiated ORs + 95% CIs
 
 ```{r}
-#| label: GLM
+#| label: table1-glm
 
 # fit logistic model
 glm_demog <- glm(
@@ -211,8 +198,10 @@ kable(glm_or, digits = 3, caption = "GLM: Exponentiated ORs & 95% CIs")
 
 P-values of BMI and Family History are less than 0.05, meaning that they are statistically significant for cancer diagnosis. However, the effects are small (ORs: 1.022, 1.037). Because the outcome was in fact constant across visits for each patient, what the GLM captures is how average demographics and self-assessment features differ between malignant vs benign patients. Since independence was assumed, repeated measures oversample patients with more visits, meaning that the standard errors are likely to be underestimated.
 
+The deviance residuals vs fitted plot shows two lines with no curvature or clear patterns, which are expected for binary outcome, suggesting no lack of fit. Linearity was assured, but independence assumption was violated inherently.
+
 ```{r}
-#| label: GLM plot
+#| label: Figure1
 #Deviance residuals vs fitted
 ggplot(data.frame(
   fitted = fitted(glm_demog),
@@ -223,7 +212,7 @@ ggplot(data.frame(
   labs(x = "Fitted probability", y = "Deviance residual")
 ```
 
-Figure 1: Deviance residuals vs fitted The deviance residuals vs fitted plot shows two lines with no curvature or clear patterns, which are expected for binary outcome, suggesting no lack of fit. Linearity was assured, but independence assumption was violated inherently.
+Table 2: Exchangeable GEE: Exponentiated ORs & robust SEs
 
 ```{r}
 #| label: GEE
@@ -242,7 +231,11 @@ gee_exch <- geeglm(
 
 gee_exch_or <- broom::tidy(gee_exch, exponentiate = TRUE, conf.int = TRUE)
 kable(gee_exch_or, digits = 3, caption = "Exchangeable GEE: Exponentiated ORs & robust SEs" )
+```
 
+Table 3: Working Correlation (Alpha)
+
+```{r}
 # Working correlation
 alpha_exch <- gee_exch$geese$alpha
 
@@ -251,7 +244,13 @@ summary_gee <- tibble(
 )
 
 kable(summary_gee, digits  = 3, caption = "Working correlation")
+```
 
+The working correlation was approximately 1. Since outcome stays the same for each patient, within-subject outcomes have no variation and correlation can't be estimated. There was no significant predictor. Estimates are similar to GLM, but robust standard errors are larger.
+
+Table 4: Independence GEE: Exponentiated ORs & robust SEs
+
+```{r}
 gee_ind <- geeglm(
   Diagnosis_Label ~ Age_c + Gender + BMI_c +
     Family_History + Smoking_Status + Radiation_Exposure +
@@ -279,9 +278,19 @@ gee_ar1 <- geeglm(
 gee_ind_or  <- tidy(gee_ind,  exponentiate = TRUE, conf.int = TRUE)
 gee_ar1_or  <- tidy(gee_ar1,  exponentiate = TRUE, conf.int = TRUE)
 kable(gee_ind_or, digits = 3, caption = "Independence GEE: Exponentiated ORs & robust SEs")
+```
+
+Table 5: AR-1 GEE: Exponentiated ORs & robust SEs
+
+```{r}
 kable(gee_ar1_or, digits = 3, caption = "AR-1 GEE: Exponentiated ORs & robust SEs")
+```
 
+ORs and 95% CIs are almost identical for the independence, exchangeable, and AR-1 working correlations. This is expected because outcome is consistent within each subject, and the assumed correlation structure has no impact on the estimates. For the independence model, BMI was significant due to smaller standard errors.
 
+Figure 2: Pearson residuals vs fitted There was no strong pattern, which suggests that the mean model is reasonably specified. Since N is large (80,000), the robust standard errors are reliable. Residuals only reflect constant diagnosis outcome.
+
+```{r}
 # Pearson residuals vs fitted
 gee_res <- residuals(gee_exch, type = "pearson")
 gee_fit <- fitted(gee_exch)
@@ -291,17 +300,7 @@ plot(gee_fit, gee_res,
 abline(h = 0, lty = 2)
 ```
 
-Table 2: Exchangeable GEE: Exponentiated ORs & robust SEs
-
-Table 3: Working Correlation (Alpha)
-
-The working correlation was approximately 1. Since outcome stays the same for each patient, within-subject outcomes have no variation and correlation can't be estimated. There was no significant predictor. Estimates are similar to GLM, but robust standard errors are larger.
-
-Table 4: Independence GEE: Exponentiated ORs & robust SEs Table 5: AR-1 GEE: Exponentiated ORs & robust SEs
-
-ORs and 95% CIs are almost identical for the independence, exchangeable, and AR-1 working correlations. This is expected because outcome is consistent within each subject, and the assumed correlation structure has no impact on the estimates. For the independence model, BMI was significant due to smaller standard errors.
-
-Figure 2: Pearson residuals vs fitted There was no strong pattern, which suggests that the mean model is reasonably specified. Since N is large (80,000), the robust standard errors are reliable. Residuals only reflect constant diagnosis outcome.
+GLMM Table 6:
 
 ```{r}
 #| label: GLMM
@@ -319,21 +318,23 @@ glmm_model1 <- glmer(m1_formula,
 # Extract Results (Odds Ratios)
 res_m1 <- tidy(glmm_model1, conf.int = TRUE, exponentiate = TRUE, effects = "fixed") %>%
   mutate(across(where(is.numeric), \(x) round(x, 3)))
-summary(glmm_model1)
 # Display Table
 kable(res_m1, caption = "Model 1: Fixed Effects (Odds Ratios)")
+```
 
+Table 7: ICC
+
+```{r}
 var_random <- as.data.frame(VarCorr(glmm_model1))$vcov[1]
 # Fixed residual variance for logistic distribution
 var_resid <- 3.29 
 icc <- var_random / (var_random + var_resid)
 print(paste("ICC:", round(icc, 3)))
-
 ```
 
-GLMM Table 6:
-
 \[Interpretation\]
+
+Figure 3: \[Interpretation\]
 
 ```{r}
 #| label: GLMM diagnosis
@@ -368,19 +369,24 @@ plot_pearson_time <- function(model, name, data) {
     theme_minimal()
 }
 plot_qq_re(glmm_model1, "Model 1")
+
+```
+
+Figure 4: \[Interpretation\]
+
+```{r}
 plot_pearson(glmm_model1, "Model 1")
+```
+
+Figure 5:
+
+```{r}
 plot_pearson_time(glmm_model1, "Model 1", dat)
 ```
 
-Figure 3: \[Interpretation\]
-
 ## Tumor/Requires Scan or other test (i.e. ‘Clinical Assessment’) Characteristics Model
 
-Table 7: Clinical-Assessment Logistic GLM Exponentiated ORs + 95% CIs Figure 4. Clinical-Assessment Logistic GLM Plot of Centered & Scaled Coefficients
-
-Discuss significant predictors, feature importance. Discuss how limiting to baseline gives us a cross-sectional population level view of initial tumor diagnoses
-
-Figure 5. Clinical-Assessment Logistic GLM Pearson & Deviance Residuals
+Table 8: Clinical-Assessment Logistic GLM Exponentiated ORs + 95% CIs
 
 ```{r}
 ##############################################################
@@ -409,7 +415,11 @@ glm_table |>
   knitr::kable(
     caption = "Table X. Clinical-Based GLM Baseline Visit Model Results",
   )
+```
 
+Figure 6: Clinical-Assessment Logistic GLM Plot of Centered & Scaled Coefficients
+
+```{r}
 # Plot of most influential predictors
 glm_influence <- glm_table |>
   mutate(abs = abs(as.numeric(estimate))) |>
@@ -428,6 +438,14 @@ glm_influence %>%
     title = "Figure X. Most Influential Predictors (GLM Baseline Model)"
   ) +
   theme_minimal()
+```
+
+Discuss significant predictors, feature importance. Discuss how limiting to baseline gives us a cross-sectional population level view of initial tumor diagnoses
+
+Figure 7. Clinical-Assessment Logistic GLM Pearson & Deviance Residuals
+
+```{r}
+
 
 # Check Deviance & Pearson residuals
 # - DEVIANCE: Looks more like we would expect for logistic regression.
@@ -449,21 +467,30 @@ ggplot(glm_residuals, aes(fitted, dev)) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   labs(title = "Figure X. Deviance Residuals for GLM model") +
   theme_bw()
+```
 
+Figure 8. Clinical-Assessment Logistic GLM Pearson & Deviance Residuals
+
+```{r}
 ggplot(glm_residuals, aes(fitted, pear)) +
   geom_point(alpha = 0.6) +
   geom_hline(yintercept = 0, linetype = "dashed") +
   labs(title = "Figure X. Pearson Residuals for GLM model") +
   theme_bw()
 
+```
+
+Table 9.
+
+```{r}
 # Proof of poor model fit for those that do have malignancy 
 devs <- residuals(glm_base, type = "deviance")
 table(clinicdata_base$Diagnosis_Label, round(devs, 1))
-
-
 ```
 
 Panel these two plots into one figure side by side; discuss fine mean/variance structure, but model seems to struggle with those who have malignant statuses
+
+Table 10: Clinical-Assessment GEE Exponentiated ORs + 95% CIs
 
 ```{r}
 ##############################################################
@@ -508,20 +535,7 @@ dfcorr4 <- dfcorr3 |>
     exa = wc_ex,
     ara = wc_ar ^ lag
   )
-
-ggplot(dfcorr4, aes(x = lag)) +
-  geom_point(aes(y = correlation), color = "blue", size = 3) +
-  geom_line(aes(y = correlation), color = "blue", linetype = "dashed") +
-  geom_hline(aes(yintercept = ara), color = "red", linetype = "solid", linewidth = 1) +
-  labs(
-    x = "Lag",
-    y = "Correlation",
-    title = "Empirical Correlations by Lag",
-    subtitle = "Red line = Working AR1 Correlation"
-  ) +
-  scale_x_continuous(breaks = 1:5) +
-  theme_minimal() 
-
+{r}
 # Proceed w/ whichever (AR1 or CS) structure is more appropriate above.
 # Create table of model results to interpret.
 # -> Major limitation: same diagnosis throughout all timepoints. 
@@ -553,6 +567,28 @@ gee_ar_table |>
     caption = "Table X. Clinical-Based GEE Model Results",
   )
 
+```
+
+Figure 9.
+
+```{r}
+ggplot(dfcorr4, aes(x = lag)) +
+  geom_point(aes(y = correlation), color = "blue", size = 3) +
+  geom_line(aes(y = correlation), color = "blue", linetype = "dashed") +
+  geom_hline(aes(yintercept = ara), color = "red", linetype = "solid", linewidth = 1) +
+  labs(
+    x = "Lag",
+    y = "Correlation",
+    title = "Empirical Correlations by Lag",
+    subtitle = "Red line = Working AR1 Correlation"
+  ) +
+  scale_x_continuous(breaks = 1:5) +
+  theme_minimal() 
+```
+
+Figure 10. Clinical-Assessment GEE Plot of Centered & Scaled Coefficients
+
+```{r}
 # Rank most 'influential' factors by absolute value of estimated coefficients, 
 # if possible create a stratified trajectory plot of most important feature
 gee_influence <- gee_ar_table |>
@@ -572,7 +608,11 @@ gee_influence %>%
     title = "Figure X. Most Influential Predictors (AR1 GEE Model)"
   ) +
   theme_minimal()
+```
 
+figure 11.
+
+```{r}
 # Review residual diagnostics for logistic regression 
 gee_residplot <- clinicdata
 gee_residplot$resid_p <- residuals(gee_ar, type = "pearson")
@@ -600,14 +640,11 @@ ggplot(gee_residplot, aes(x = fit, y = resid_p)) +
 #   GEE is not appropriate. Instead, we can handle each visit as its own independent
 #   bernoulli observation with GLM, or instead account for repeated measures with
 #   random effects from GLMM
-
 ```
-
-Table 8: Clinical-Assessment GEE Exponentiated ORs + 95% CIs Figure 6. Clinical-Assessment GEE Plot of Centered & Scaled Coefficients
 
 Discuss how GEE fails here due to no within-subject variability. Discuss how estimates we see are mostly random noise, incredibly small and all odds ratios = 1. I don’t think there’s any point in plotting the residuals for this one
 
-GLMM Table 9:
+GLMM Table 10:
 
 ```{r}
 # Fit GLMM for Model 2
@@ -628,6 +665,11 @@ res_m2 <- tidy(glmm_model2, conf.int = TRUE, exponentiate = TRUE, effects = "fix
 
 # Display Table
 kable(res_m2, caption = "Model 2: Fixed Effects (Odds Ratios)")
+```
+
+Table 11 ICC
+
+```{r}
 # Analysis: Calculate ICC manually (for Logistic)
 var_random <- as.data.frame(VarCorr(glmm_model2))$vcov[1]
 # Fixed residual variance for logistic distribution
@@ -639,12 +681,22 @@ print(paste("ICC:", round(icc, 3)))
 
 \[Interpretation\]
 
-Figure 7: \[Interpretation\]
+Figure 12: \[Interpretation\]
 
 ```{r}
 #| label: GLMM-Diagnosis
 plot_qq_re(glmm_model2, "Model 2")
+```
+
+Figure 13:
+
+```{r}
 plot_pearson(glmm_model2, "Model 2")
+```
+
+Figure 14
+
+```{r}
 plot_pearson_time(glmm_model2, "Model 2",clinicdata_base)
 ```
 
@@ -663,6 +715,8 @@ DH notes: GLM and GEE have similar estimates/ORs, but GLM has smaller SEs from r
 GLM vs GEE vs GLMM \[compare/contrast the results\] \[compare/contrast the diagnostics\]
 
 Self vs. Clinical Assessment Model Comparisons
+
+Table 12
 
 ```{r}
 # Extract AIC
