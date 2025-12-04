@@ -2,7 +2,7 @@
 title: "Self-Assessment vs. Clinical-Assessment Models for Thyroid Cancer"
 author: "Dan Huang, Yuchen Li, Zhenzhong Zhang, Evan Rhodes"
 format:
-  html:
+  pdf:
     toc: true
     toc-depth: 2
     number-sections: true
@@ -366,8 +366,8 @@ plot_pearson <- function(model, name) {
     theme_minimal()
 }
 
-plot_pearson_time <- function(model, name, data) {
-  df <- data.frame(Fitted = data$Visit_Number, Resid = residuals(model, type = "pearson"))
+plot_pearson_time <- function(model, name, data1) {
+  df <- data.frame(Fitted = data1$Visit_Number, Resid = residuals(model, type = "pearson"))
   ggplot(df, aes(x = Fitted, y = Resid)) +
     geom_point(alpha = 0.1) +
     geom_hline(yintercept = 0, linetype = "dashed") +
@@ -423,7 +423,7 @@ glm_table <- tidy(glm_base, conf.int = TRUE) |>
 
 glm_table |>
   knitr::kable(
-    caption = "Table X. Clinical-Based GLM Baseline Visit Model Results",
+    caption = "Table X. Clinical-Based GLM Baseline Visit Model Results", digits = 3,
   )
 ```
 
@@ -576,7 +576,7 @@ gee_ar_table <- broom::tidy(gee_ar, conf.int = TRUE) %>%
 
 gee_ar_table |>
   knitr::kable(
-    caption = "Clinical-Based GEE Model Results",
+    caption = "Clinical-Based GEE Model Results", digits = 3,
   )
 ```
 
