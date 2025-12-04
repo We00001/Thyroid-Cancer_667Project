@@ -382,7 +382,7 @@ plot_qq_re(glmm_model1, "Model 1")
 Figure 4: \[Interpretation\]
 
 ```{r}
-#| label: glmm`-pearson
+#| label: glmm1-pearson
 plot_pearson(glmm_model1, "Model 1")
 ```
 
@@ -716,7 +716,7 @@ Figure 14: GLMM Pearson Residuals vs. Time
 
 ```{r}
 #| label: glmm2-pearson-time
-plot_pearson_time(glmm_model2, "Model 2",clinicdata_base)
+plot_pearson_time(glmm_model2, "Model 2",clinicdata)
 ```
 
 ER NOTES: Discuss no variability in outcome causes GEE to fail (working correlations =1, all estimates close to 0 -\> all odds ratios =1); since very little within-person variability, GEE not appropriate GLM model seems to fit, but underestimating probability of malignancy in those who have it (about 17-18% prevalence of malignancy among the 80,000 participants)
