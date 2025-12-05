@@ -1,0 +1,764 @@
+---
+title: "Self-Assessment vs. Clinical-Assessment Models for Thyroid Cancer"
+author: "Dan Huang, Yuchen Li, Zhenzhong Zhang, Evan Rhodes"
+format:
+  pdf:
+    toc: true
+    toc-depth: 2
+    number-sections: true
+    embed-resources: true
+    code-fold: true
+    code-tools: false
+    fig-cap-location: top
+execute:
+  echo: false
+  warning: false
+  message: false
+editor: visual
+---
+
+```{r}
+#| label: load-data
+
+# Create data directory if it doesn't exist
+if (!dir.exists("data")) {
+  dir.create("data")
+}
+
+# Define the path for the data file
+data_file <- "data/ThyroTrack-MV Processed Dataset.csv"
+
+# Download and unzip the data if the file doesn't exist
+if (!file.exists(data_file)) {
+  zip_file <- "data/dataset.zip"
+  
+  # Download the dataset
+  download_url <- "https://www.kaggle.com/api/v1/datasets/download/datasetengineer/multi-visit-thyroid-cancer-monitoring-dataset-shd"
+  system(paste("curl -L -o", zip_file, shQuote(download_url)))
+  
+  # Unzip the dataset
+  system(paste("unzip", zip_file, "-d data"))
+  
+  # Remove the zip file
+  file.remove(zip_file)
+}
+
+# Load the data into a dataframe
+data <- read.csv(data_file)
+```
+
+```{r}
+#| label: setup
+# Load required packages
+suppressPackageStartupMessages({
+    library(tidyverse)
+    library(broom)
+    library(broom.mixed)
+    library(geepack)
+    library(lme4)
+    library(scales)
+    library(MASS)
+    library(gridExtra)
+    library(car)
+    library(lattice)
+    library(knitr)
+})
+```
+
+```{r}
+#| label: data preprocessing
+# Load CSV file
+
+# Check for missing values - no missing values! Proceed w/ full sample for analysis
+# sum(is.na(data))
+
+# Limit to only the predictors we're interested in, center & scale numeric features 
+clinicdata <- data |>
+  dplyr::select(Patient_ID, Visit_Number, Nodule_Size_mm, Shape_Score, Margin_Sharpness, 
+         Echogenicity_Index, Calcification_Presence, Texture_Entropy, 
+         Capsular_Invasion_Indicator, TSH_Risk_Level, TPOAb_Probability,
+         Thyroglobulin_Level_Predicted, Hormonal_Change_Rate, Diagnosis_Label) |>
+  mutate(across(
+    .cols = c(Nodule_Size_mm, Shape_Score, Margin_Sharpness, Echogenicity_Index,
+              Texture_Entropy, TPOAb_Probability, Thyroglobulin_Level_Predicted,
+              Hormonal_Change_Rate),
+    .fns = ~as.vector(scale(.))
+  )) |>
+  mutate(Patient_ID = as.factor(Patient_ID), 
+         Calcification_Presence = as.factor(Calcification_Presence),
+         Capsular_Invasion_Indicator = as.factor(Capsular_Invasion_Indicator))
+
+# Define model formula to use across GEE, GLM, & GLMM
+modformula <- Diagnosis_Label ~ Visit_Number + Nodule_Size_mm + Shape_Score + 
+              Margin_Sharpness + Echogenicity_Index + Calcification_Presence + 
+              Texture_Entropy + Capsular_Invasion_Indicator + TSH_Risk_Level + 
+              TPOAb_Probability + Thyroglobulin_Level_Predicted + Hormonal_Change_Rate
+
+glmformula <- Diagnosis_Label ~  Nodule_Size_mm + Shape_Score + 
+              Margin_Sharpness + Echogenicity_Index + Calcification_Presence + 
+              Texture_Entropy + Capsular_Invasion_Indicator + TSH_Risk_Level + 
+              TPOAb_Probability + Thyroglobulin_Level_Predicted + Hormonal_Change_Rate
+
+dat <- data %>%
+  mutate(
+    Diagnosis_Label    = as.integer(Diagnosis_Label), 
+    Gender             = factor(Gender),
+    Family_History     = factor(Family_History, levels = c(0, 1)),
+    Smoking_Status     = factor(Smoking_Status),
+    Radiation_Exposure = factor(Radiation_Exposure, levels = c(0, 1)),
+    Medication_Adherence = as.numeric(Medication_Adherence),
+    Visit_Number       = factor(Visit_Number),
+    Patient_ID = as.factor(Patient_ID)
+  )
+
+# center continuous predictors
+dat <- dat %>%
+  mutate(
+    Age_c        = scale(Age,        center = TRUE, scale = TRUE),
+    BMI_c        = scale(BMI,        center = TRUE, scale = TRUE),
+    HR_c         = scale(Heart_Rate, center = TRUE, scale = TRUE),
+    Steps_c      = scale(Daily_Steps,center = TRUE, scale = TRUE),
+    Sleep_c      = scale(Sleep_Patterns, center = TRUE, scale = TRUE),
+    Temp_c       = scale(Body_Temperature, center = TRUE, scale = TRUE),
+    SpO2_c       = scale(Pulse_Oximetry,  center = TRUE, scale = TRUE),
+    Stress_c     = scale(Stress_Level,    center = TRUE, scale = TRUE),
+    SymptomDur_c = scale(Symptom_Onset_Duration, center = TRUE, scale = TRUE),
+    Adherence_c  = scale(Medication_Adherence,   center = TRUE, scale = TRUE)
+  )
+
+
+```
+
+# Introduction
+
+Thyroid cancer has seen increasing prevalence and mortality in recent decades, largely in part to improved diagnostic technologies and early detection methods in the medical field; in addition, growing tumor sizes and observed disparities between demographics groups raise concern that there are true environmental or lifestyle factors at play as well.1 The diagnosis pipeline generally begins with a physical exam to identify any lumps or swelling around the neck area with ultrasound, fine-needle aspiration, or electrography scans to follow for investigation into the nodule’s benign or malignant status. A benign nodule often does not require any major intervention unless it is large enough to cause alternative issues, while malignant nodules can spread cancerous cells throughout the body and must be quickly treated. Research to date has identified an array of different risk factors that can help determine the probability of malignancy in a particular thyroid nodule, ranging across basic demographics information, diagnostic scan results, and basic health aspects that the average person may have access to through wearable technology (i.e. heart rate, sleep patterns, etc.). There are a multitude of studies investigating the impact of these risk factors on thyroid cancer pathologies for malignancy status and cancer subtypes, with a common finding that diagnostic scans are beneficial but do not reliability differentiate benign from malignant nodules.2 To that end, careful consideration of additional demographics and other health measurements from blood tests, wearable data, and other sources must be considered when investigating a patient with potential thyroid cancer.
+
+With different levels of access to the various tiers of thyroid cancer diagnostics, natural questions regarding how models targeting these levels of access would perform when compared to each other in predicting thyroid nodule malignancy status. For example, risk factors such as age, gender, weight, and family history are easily accessible to the average person without the need for professional equipment. Similarly, rising popularity in wearable technology that can measure biological functions can provide a large portion of the population with easily referenced heart rates, daily steps, or even estimated stress levels. Obtaining risk factors from these sources requires much less patient burden when compared to visiting a clinical setting for diagnostics and testing. To explore the potential gain of a thyroid cancer malignancy status prediction model designed for at-home patient use, the research team has proposed comparing a self-assessment model utilizing only features that a patient could obtain themself to a clinical-assessment model utilizing only features from professional technologies. These analyses are purely exploratory in nature, targeting facets of patient burden and access in pursuing thyroid cancer treatment as opposed to treatment or disease mechanisms themselves. In addition, thyroid cancer subtypes will not be accounted for as they have differing pathological routes and the intention is to attempt to predict any cancer present as opposed to specific cancer type. The team hopes to identify the most prevalent risk factors for malignant thyroid nodules in both the self-assessment and clinical-assessment pools for comparison with current literature. In practice, it would be expected that formal statistical models include features from both assessment pools. For the purposes of this exploration however, the research team presumes that the clinical-assessment model will perform better than the self-assessment model since clinical-assessment measurements directly concern the nodule whose malignancy status is in question.
+
+To perform analyses, the study team elected to use a multi-visit thyroid cancer monitoring data available for public download on Kaggle. The data contain two to five visits across 80,000 unique participants over January 2015 to March 2025. Patient information has been de-identified for public use and no missing values are present in the data; collection sources included participating healthcare centers and wearable device logs that were supplied by the participants. There is a rich selection of risk factors to take from, including demographic information, scan results, blood test results, and wearable device measurements. Available features were categorized into self- or clinical-assessment bins and review of the current literature informed predictor selection after categorization.
+
+# Methods
+
+## Demographic/Wearable (i.e. ‘Self Assessment’) Characteristics Model
+
+The aim for this model is to investigate how demographic and self-assessment characteristics are associated with the probability of "Malignant". The outcome is the cancer diagnosis result (Diagnosis_Label) with the coding of 0 being “Benign” or non-cancerous and 1 being “Malignant” or cancerous.
+
+The predictors used for this model include the demographics variables: age, gender, BMI, family history, smoking status, radiation exposure; the time varying self-assessment measures: heart rate, daily steps, sleep patterns, body temperature, pulse oximetry, stress level, symptom onset duration, medication adherence and the time effect (visit number).
+
+Generalized Linear Models (GLM), Generalized Estimating Equations (GEE), and Generalized Linear Mixed Models (GLMM) were each applied to evaluate the associations between self-assessment characteristics and cancer diagnosis. The results from the three modeling approaches were then compared and discussed.
+
+Data preprocessing for the GLM, GEE, and GLMM are consistent: All the continuous covariates were centered and scaled, which include: age, BMI, and all the time varying self-assessment measures. Then, the visit number was defined as numbers and patient ID was used as a grouping factor.
+
+First, a logistic GLM was fitted and the exponentiated odds ratio and 95% confidence intervals were calculated. While GLM assumes independence, homoscedasticity, linearity and an exponential family distribution, our dataset contains repeated measures, meaning observations within the same subject are correlated. Since the data are in long format, the independence assumption was clearly violated but was nonetheless assumed for the purpose of fitting the GLM. The GLM was solely used as a comparison model against the GEE and GLMM and is not intended to provide valid reference for correlated data. The deviance residuals vs. fitted plot was plotted to check the GLM assumptions.
+
+Next, a GEE model was applied using an exchangeable working correlation structure, and odds ratios with robust standard errors were obtained. The working correlation (α) was estimated from the data. To assess sensitivity to the choice of correlation structure, we additionally fit GEE models assuming independence and AR-1 and compared their results with those from the exchangeable model. Key GEE assumptions include correctly specifying the link function and working covariance structure, accommodating correlated responses, and relying on robust variance estimates for valid inference. Pearson residuals versus fitted values were examined to assess model fit.
+
+Lastly, a GLMM with a random intercept was fit to directly handle the repeated-measures structure of the data. Instead of assuming independence like the GLM, the GLMM lets each participant have their own baseline risk, which helps account for within-person correlation. The model assumes the random effects are normally distributed, and fixed-effect odds ratios with 95% CIs were used to assess subject-specific predictor effects. To check model assumptions, we reviewed the Q–Q plot of the random intercepts and looked at Pearson residual plots. Even though tumor status doesn’t change over time—which limits how much the random effects can really do—the GLMM still offers a useful comparison by modeling correlation directly.
+
+## Tumor/Requires Scan or other test (i.e. ‘Clinical Assessment’) Characteristics Model
+
+For the clinical-assessment model, current literature regarding thyroid cancer diagnostic scan risk factors and association of other blood test measurements present in the analysis dataset was reviewed. Across sources, tumor size and shape was commonly reported as a major indicator of malignancy and subsequent malignant growths.2, 3 In addition, Woliński et al. suggest that decreased elasticity, microcalcifications, and irregular margins from diagnostic scans of the nodule also increase malignancy risk.2 As such, relevant variables present in the curated Kaggle dataset resulting from diagnostic scans were included in the clinical-assessment model. Another scan diagnostic feature recommended for thyroid cancer malignancy status is echogenicity, a measure of how well a certain tissue can reflect sound waves from ultrasound imaging.5 The final scan diagnostic measurement that was included in the clinical-assessment model was the image entropy, a statistical representation of the scan image’s disorder; it has been posed that capturing intratumor heterogeneity was associated with gene-expression patterns, which can be used to help improve decisions in pursuing cancer treatments.6
+
+Aside from quantifications in diagnostic scans, common blood tests at the clinic can also provide several key risk factors for thyroid nodule malignancy. From blood tests, medical providers can obtain a measure of thyroid-stimulating hormone (TSH), which recent studies have presented could help provide additional information to predict malignancy 7 since it is possible that increasing TSH concentrations could promote neoplasia and carcinogenesis on thyroid tissue.4 In addition, other variables available in the public dataset that fall into this blood test sub-category include measures of thyroid peroxidase antibodies (TPOAb) and thyroglobulin antibodies (TGAB) that are also determined to potentially assist in diagnosing malignant thyroid tumors.7
+
+All non-categorical features selected for model use were scaled and centered before proceeding with analyses. As this work is exploratory in nature, one goal is to compare risk factor influence on the overall model and we can achieve a crude comparison by ensuring that all of our coefficient interpretations represent the same scale of change; in addition, scaling and centering helps with interpretation of many of the feature estimates whose values are bounded from zero to one. Dummy coding for reference cell interpretation was implemented for any binary indicator or categorical variable.
+
+As an initial step into this exploratory analysis, a generalized estimating equation (GEE) model was fit using nodule benign or malignancy status as the binary response and all diagnostic measurements previously mentioned as pre-determined fixed effects. Due to the robust nature of GEE estimates and guards against mis-specified within-participant correlation structures, it was determined that this would be an adequate initial model to investigate with an assumed exchangeable correlation structure. Once the initial model is applied, empirical correlations calculated by Pearson residuals will be plotted to determine the observed correlation structure over time lags, with a max time lag of four visits. These correlations by visit lag time will be used to assess the exchangeable correlation structure selection and switch to an AR(1) structure if necessary. Final results and coefficient influence will be interpreted from whichever correlation structure appears most appropriate according to the empirical correlations. The study team notes that malignancy/benign nodule status does not change over patient visits, indicating little within-subject variation that may likely cause GEE to struggle with this problem context, which requires a moderate amount of variation for estimation algorithms to be appropriate. A Pearson residual plot against fitted model probability values will be reviewed to identify any majorly outlying data points and confirm appropriate mean and variance structures have been applied.
+
+Next, a generalized linear model (GLM) approach was used while subsetting the data to only the baseline visit, making an assumption that participant’s measurements at their first visit should be indicative of their tumor status, given that tumor status did not change over time. A similar workflow will be applied, reviewing model estimates for the predetermined clinical risk factors and interpreting predictor influence. Deviance and Pearson residual plots will be reviewed for adequate model fit. Though there is a major assumption in baseline visit measurements being solely indicative of tumor status, this limitation helps satisfy GLM requirements of independent observations. Some bias will likely be introduced by this approach, but model estimates for risk factors will be more indicative of true population-level effects that may be invalid under a GEE approach.
+
+Lastly, a generalized linear mixed model (GLMM) was fit to make use of all repeated visits while accounting for the fact that each participant contributes multiple observations. Instead of subsetting our dataset to baseline only, the GLMM includes a random intercept so that each participant has their own underlying risk level. We aim to adjust for the within-person correlation that naturally occurs in repeated measures. The same workflow will be followed as illustrated in GLM section above. While the tumor status outcome does not change over time, which limits how much within-person information the model can actually learn—the GLMM still helps satisfy the requirement of correlated data by explicitly modeling subject-specific variability. Some added variability in estimates is expected because of the static outcome, but the GLMM provides a complementary, subject-level perspective on predictor effects that a standard GLM cannot capture.
+
+# Results
+
+## Demographic/Wearable (i.e. ‘Self Assessment’) Characteristics Model
+
+### Logistic GLM Exponentiated ORs + 95% CIs
+
+```{r}
+#| label: glm1-fit
+#| tbl-cap: "Logistic GLM Exponentiated ORs + 95% CIs"
+
+# fit logistic model
+glm_demog <- glm(
+  Diagnosis_Label ~ Age_c + Gender + BMI_c +
+    Family_History + Smoking_Status + Radiation_Exposure +
+    HR_c + Steps_c + Sleep_c + Temp_c + SpO2_c +
+    Stress_c + SymptomDur_c + Adherence_c + Visit_Number,
+  family = binomial(link = "logit"),
+  data   = dat
+)
+# get ORs and CIs
+glm_or <- broom::tidy(glm_demog, exponentiate = TRUE, conf.int = TRUE)
+
+kable(glm_or, digits = 3)
+```
+
+P-values of BMI and Family History are less than 0.05, meaning that they are statistically significant for cancer diagnosis. However, the effects are small (ORs: 1.022, 1.037). Because the outcome was in fact constant across visits for each patient, what the GLM captures is how average demographics and self-assessment features differ between malignant vs benign patients. Since independence was assumed, repeated measures oversample patients with more visits, meaning that the standard errors are likely to be underestimated.
+
+### GLM model – Deviance residuals vs fitted plot
+
+```{r}
+#| label: glm1-pearson
+#| fig-cap: "Figure 1: Deviance residuals vs fitted"
+#| fig-width: 4
+#| fig-height: 2
+ggplot(data.frame(
+  fitted = fitted(glm_demog),
+  resid  = residuals(glm_demog, type = "deviance")
+), aes(x = fitted, y = resid)) +
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  labs(x = "Fitted probability", y = "Deviance residual")
+```
+
+The deviance residuals vs fitted plot shows two lines with no curvature or clear patterns, which are expected for binary outcome, suggesting no lack of fit. Linearity was assured, but independence assumption was violated inherently.
+
+### Working Correlation (Alpha)
+
+```{r}
+#| label: gee1-corr
+#| tbl-cap: "Working Correlation (Alpha)"
+
+gee_exch <- geeglm( Diagnosis_Label ~ Age_c + Gender + BMI_c + Family_History + Smoking_Status + Radiation_Exposure + HR_c + Steps_c + Sleep_c + Temp_c + SpO2_c + Stress_c + SymptomDur_c + Adherence_c + Visit_Number, family = binomial(link = "logit"), id = Patient_ID, corstr = "exchangeable", data = dat)
+
+# Working correlation
+alpha_exch <- gee_exch$geese$alpha
+
+summary_gee <- tibble(
+  alpha_exch = alpha_exch
+)
+
+kable(summary_gee, digits  = 3)
+```
+
+The working correlation was approximately 1. Since outcome stays the same for each patient, within-subject outcomes have no variation and correlation can't be estimated. There was no significant predictor. Estimates are similar to GLM, but robust standard errors are larger.
+
+### Exchangeable GEE: Exponentiated ORs & SEs
+
+```{r}
+#| label: gee1-fit 
+#| tbl-cap: "Exchangeable GEE: Exponentiated ORs & robust SEs"
+gee_exch_or <- broom::tidy(gee_exch, exponentiate = TRUE, conf.int = TRUE)
+
+kable(gee_exch_or, digits = 3)
+```
+
+### Independence GEE: Exponentiated ORs & robust SEs
+
+```{r}
+#| label: gee1-or-se
+#| tbl-cap: "Independence GEE: Exponentiated ORs & robust SEs"
+gee_ind <- geeglm(
+  Diagnosis_Label ~ Age_c + Gender + BMI_c +
+    Family_History + Smoking_Status + Radiation_Exposure +
+    HR_c + Steps_c + Sleep_c + Temp_c + SpO2_c +
+    Stress_c + SymptomDur_c + Adherence_c +
+    Visit_Number,
+  family = binomial(link = "logit"),
+  id     = Patient_ID,
+  corstr = "independence",
+  data   = dat
+)
+
+gee_ar1 <- geeglm(
+  Diagnosis_Label ~ Age_c + Gender + BMI_c +
+    Family_History + Smoking_Status + Radiation_Exposure +
+    HR_c + Steps_c + Sleep_c + Temp_c + SpO2_c +
+    Stress_c + SymptomDur_c + Adherence_c +
+    Visit_Number,
+  family = binomial(link = "logit"),
+  id     = Patient_ID,
+  corstr = "ar1",
+  data   = dat
+)
+
+gee_ind_or  <- tidy(gee_ind,  exponentiate = TRUE, conf.int = TRUE)
+gee_ar1_or  <- tidy(gee_ar1,  exponentiate = TRUE, conf.int = TRUE)
+kable(gee_ind_or, digits = 3)
+```
+
+### AR-1 GEE: Exponentiated ORs & robust SEs
+
+```{r}
+#| label: gee1-ar1
+#| tbl-cap: "Table 5: AR-1 GEE: Exponentiated ORs & robust SEs"
+kable(gee_ar1_or, digits = 3)
+```
+
+ORs and 95% CIs are almost identical for the independence, exchangeable, and AR-1 working correlations. This is expected because outcome is consistent within each subject, and the assumed correlation structure has no impact on the estimates. For the independence model, BMI was significant due to smaller standard errors. There was no strong pattern, which suggests that the mean model is reasonably specified. Since N is large (80,000), the robust standard errors are reliable. Residuals only reflect constant diagnosis outcome.
+
+### GEE model – Pearson residuals vs fitted plot
+
+```{r}
+#| label: gee1-pearson
+#| fig-cap: "GEE model – Deviance residuals vs fitted plot"
+#| fig-width: 4
+#| fig-height: 4
+# Pearson residuals vs fitted
+gee_res <- residuals(gee_exch, type = "pearson")
+gee_fit <- fitted(gee_exch)
+
+plot(gee_fit, gee_res,
+     xlab = "Fitted probability", ylab = "Pearson residuals")
+abline(h = 0, lty = 2)
+```
+
+## GLMM – OR estimates and SEs
+
+```{r}
+#| label: glmm1-fit
+#| tbl-cap: "GLMM – OR estimates and SEs"
+m1_formula <- Diagnosis_Label ~ Age_c + Gender + BMI_c +
+    Family_History + Smoking_Status + Radiation_Exposure +
+    HR_c + Steps_c + Sleep_c + Temp_c + SpO2_c +
+    Stress_c + SymptomDur_c + Adherence_c +
+    Visit_Number + (1 | Patient_ID)
+
+glmm_model1 <- glmer(m1_formula, 
+                     data = dat, 
+                     family = binomial(link = "logit"), 
+                     nAGQ = 0) # Optimization for large datasets
+
+# Extract Results (Odds Ratios)
+res_m1 <- tidy(glmm_model1, conf.int = TRUE, exponentiate = TRUE, effects = "fixed") %>%
+  mutate(across(where(is.numeric), \(x) round(x, 3)))
+# Display Table
+kable(res_m1)
+```
+
+The GLMM results show that none of the clinical predictors meaningfully shifted the odds of having tumor involvement once subject-level variability was accounted for. All odds ratios are very close to 1, and the confidence intervals are fairly wide but still centered around no effect, which lines up with what we expected given that tumor status doesn’t change across visits. When we allow each participant to have their own random intercept, the fixed effects don’t contribute much additional explanatory power. The model yields an ICC of 0.963, indicating that about 96% of the total variability in tumor status is explained simply by which participant the measurement came from, not by the visit or the predictors in the model.
+
+### GLMM model – Q-Q Plot of Random Effects
+
+```{r}
+#| label: glmm1-qq
+#| fig-cap: "GLMM model – Q-Q Plot of Random Effects"
+#| fig-width: 4
+#| fig-height: 4
+
+plot_qq_re <- function(model, title) {
+  re <- ranef(model)$Patient_ID[[1]]
+  data.frame(re = re) %>%
+    ggplot(aes(sample = re)) +
+    stat_qq() + stat_qq_line(color="red") +
+    labs(x="Theoretical", y="Sample") +
+    theme_minimal()
+}
+
+plot_pearson <- function(model, name) {
+  df <- data.frame(Fitted = fitted(model), Resid = residuals(model, type = "pearson"))
+  ggplot(df, aes(x = Fitted, y = Resid)) +
+    geom_point(alpha = 0.1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(x = "Fitted Values", y = "Pearson Residuals") +
+    theme_minimal()
+}
+
+plot_pearson_time <- function(model, data1) {
+  df <- data.frame(Fitted = data1$Visit_Number, Resid = residuals(model, type = "pearson"))
+  ggplot(df, aes(x = Fitted, y = Resid)) +
+    geom_point(alpha = 0.1) +
+    geom_hline(yintercept = 0, linetype = "dashed") +
+    labs(x = "Time", y = "Pearson Residuals") +
+    theme_minimal()
+}
+plot_qq_re(glmm_model1, "GLMM")
+
+```
+
+The Q–Q plot for the random effects shows a strong deviation from the theoretical normal line. Most of the points sit far above the 45 degree line, with a noticeable cluster of very large random intercepts, which suggests the random effects are highly skewed and not even close to normally distributed.
+
+### GLMM model – Pearson Residuals vs. Fitted Values Plot
+
+```{r}
+#| label: glmm1-pearson
+#| fig-cap: "GLMM model – Pearson Residuals vs. Fitted Values"
+#| fig-width: 4
+#| fig-height: 2
+plot_pearson(glmm_model1)
+```
+
+The GLMM Pearson residuals show a very limited range and two tight clusters. This pattern reflects the binary, non-changing outcome—participants with no tumor consistently get very low fitted values and tiny residuals, while participants with tumors get very high fitted values and slightly positive residuals.
+
+### GLMM model – Pearson Residuals vs. Time
+
+```{r}
+#| label: glmm1-pearson-time
+#| fig-cap: "GLMM model – Pearson Residuals vs. Time"
+#| fig-width: 4
+#| fig-height: 2
+plot_pearson_time(glmm_model1, dat)
+```
+
+Looking at the residuals over time, the same two-band pattern appears at every visit. We confirm that the GLMM is fitting two stable groups rather than a dynamic process, which is expected given the static outcome and helps explain why the fixed effects contribute little additional information.
+
+## Tumor/Requires Scan or other test (i.e. ‘Clinical Assessment’) Characteristics Model
+
+### Clinical-Assessment GLM Exponentiated ORs and 95% CIs
+
+```{r}
+#| label: glm2-fit
+#| tbl-cap: "Clinical-Assessment GLM Exponentiated ORs and 95% CIs"
+##############################################################
+# Fit GLM model on baseline visit, 
+##############################################################
+
+# Fit GLM model on baseline visit
+clinicdata_base <- clinicdata |> filter(Visit_Number == 1)
+glm_base <- glm(glmformula, data = clinicdata_base, family = binomial)
+
+# clinicdata_base |>
+#   group_by(Diagnosis_Label) |>
+#   summarize(count = n())
+
+# Provide table of model results to interpret 
+glm_table <- tidy(glm_base, conf.int = TRUE) |>
+  mutate(
+    OR = exp(estimate),
+    OR_low = exp(conf.low),
+    OR_high = exp(conf.high)
+  ) |>
+  dplyr::select(term, estimate, std.error, statistic, p.value,
+                OR, OR_low, OR_high)
+
+glm_table |>
+  knitr::kable(digits = 3)
+```
+
+### Clinical-Assessment Logistic GLM Plot of Centered & Scaled Coefficients
+
+```{r}
+#| label: glm2-rank
+#| fig-cap: "Clinical-Assessment Logistic GLM Plot of Centered & Scaled Coefficients"
+#| fig-width: 6
+#| fig-height: 3
+# Plot of most influential predictors
+glm_influence <- glm_table |>
+  mutate(abs = abs(as.numeric(estimate))) |>
+  filter(term != "(Intercept)")
+
+glm_influence %>%
+  mutate(direction = ifelse(as.numeric(estimate) > 0, "Positive", "Negative")) %>%
+  ggplot(aes(x = reorder(term, abs), y = abs, fill = direction)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("red", "blue")) +
+  labs(
+    x = "Predictor",
+    y = "Absolute Coefficient",
+    fill = "Direction"
+  ) +
+  theme_minimal()
+```
+
+Texture Entropy was the only statistically significant predictor at baseline, showing a small negative association with tumor involvement. Based on coefficient magnitudes, TSH levels, Capsular Invasion, Texture Entropy, and Nodule Size emerged as the most influential features overall, even though most were not significant. Because we limited the analysis to baseline, the GLM provides a purely cross-sectional, population-level view of which initial clinical and imaging features best distinguish tumor status at the first visit.
+
+### Clinical-Assessment Logistic GLM Deviance Residuals
+
+```{r}
+#| label: glm2-deviance
+#| fig-cap: "Clinical-Assessment Logistic GLM Deviance Residuals"
+#| fig-width: 4
+#| fig-height: 2
+# Check Deviance & Pearson residuals
+# - DEVIANCE: Looks more like we would expect for logistic regression.
+#   Parallel bands about 0. However, those with malignancy statuses have 
+#   much greater absolute values in deviance residuals than those with 
+#   benign statuses; this suggests our model is underestimating the probability
+#   of malignancy for those who actually have it
+# - PEARSON: Assumed mean & variance structures seem adequate. Seeing similar
+#   pattern of under-estimation in probability of malignancy for those who 
+#   actually have it.
+glm_residuals <- data.frame(
+  fitted = fitted(glm_base), 
+  dev = residuals(glm_base, type = "deviance"),
+  pear = residuals(glm_base, type = "pearson")
+)
+
+ggplot(glm_residuals, aes(fitted, dev)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_bw()
+```
+
+### Clinical-Assessment Logistic GLM Pearson Residuals
+
+```{r}
+#| label: glm2-pearson
+#| fig-cap: "Clinical-Assessment Logistic GLM Pearson Residuals"
+#| fig-width: 4
+#| fig-height: 2
+ggplot(glm_residuals, aes(fitted, pear)) +
+  geom_point(alpha = 0.6) +
+  geom_hline(yintercept = 0, linetype = "dashed") +
+  theme_bw()
+
+```
+
+### Clinical-Assessment Logistic GLM Deviance Table
+
+```{r}
+#| label: glm2-dev-table
+#| tbl-cap: "Clinical-Assessment Logistic GLM Deviance Table"
+# Proof of poor model fit for those that do have malignancy 
+# devs <- residuals(glm_base, type = "deviance")
+# table(clinicdata_base$Diagnosis_Label, round(devs, 1))
+devs <- residuals(glm_base, type = "deviance")
+
+resid_tbl <- table(
+  Diagnosis = clinicdata_base$Diagnosis_Label, 
+  Residual_Value = round(devs, 1)
+)
+
+kable(resid_tbl,
+      align = 'c')
+```
+
+The residual plots show that the GLM’s mean–variance structure is generally fine, with fitted values tightly clustered and residuals falling into two clean bands, as expected for a binary outcome. However, the model clearly struggles with participants who have malignant tumors—the upper residual band shows larger and more variable deviance and Pearson residuals, indicating poorer fit for this subgroup. This suggests that while the GLM captures overall population patterns, it has limited ability to separate malignant from benign cases using baseline predictors alone.
+
+### Clinical-Assessment GEE Exponentiated ORs + 95% CIs with AR1
+
+```{r}
+#| label: gee2-fit
+#| tbl-cap: "Clinical-Assessment GEE Exponentiated ORs + 95% CIs with AR1"
+##############################################################
+# Fit GEE model, investigate correlation structure, & 
+# review residuals 
+##############################################################
+
+# First, just fit the model assuming GEE exchangeable
+gee_ex <- geeglm(modformula, id = Patient_ID, data = clinicdata, family = binomial, corstr = "exchangeable")
+
+# Then compare plot of Empirical vs. Working correlations by lag (CS vs. AR1)
+# -> NOTE: Both working correlations estimated as =1 since it seems like diagnoses labels
+#          do not change over time
+gee_ar <- geeglm(modformula, id = Patient_ID, data = clinicdata, family = binomial, corstr = "ar1")
+
+wc_ex <- gee_ex$geese$alpha 
+wc_ar <- gee_ar$geese$alpha
+
+dfcorr <- clinicdata |>
+  arrange(Patient_ID, Visit_Number) |>
+  mutate(residualp = residuals(gee_ex, type = "pearson"))
+
+dfcorr2 <- lapply(1:4, function(h){
+  tmp <- dfcorr |>
+    group_by(Patient_ID) |>
+    mutate(reslag = lead(residualp, n = h)) |>
+    ungroup() |>
+    filter(!is.na(reslag))
+  
+  cor(tmp$residualp, tmp$reslag)
+})
+
+dfcorr2 <- unlist(dfcorr2)
+
+dfcorr3 <- data.frame(
+  lag = 1:4,
+  correlation = dfcorr2
+)
+
+dfcorr4 <- dfcorr3 |>
+  mutate(
+    exa = wc_ex,
+    ara = wc_ar ^ lag
+  )
+# Proceed w/ whichever (AR1 or CS) structure is more appropriate above.
+# Create table of model results to interpret.
+# -> Major limitation: same diagnosis throughout all timepoints. 
+#    With many patients for whom the outcome never changes, 
+#    model sees very little within-patient change, so
+#    AR1 working correlation is estimated as one (perfectly correlated)
+#    and coefficients stop being identifiable 
+gee_ar_table <- broom::tidy(gee_ar, conf.int = TRUE) %>%
+  mutate(
+    OR = exp(estimate),                         
+    OR_low = exp(conf.low),                     
+    OR_high = exp(conf.high)                     
+  ) %>%
+  dplyr::select(
+    term,                                      
+    estimate,                                   
+    std.error,                                  
+    statistic,                                 
+    p.value,                                    
+    OR, OR_low, OR_high
+  ) |>
+  mutate(across(
+    c(estimate, std.error), 
+    ~ format(.x, scientific = TRUE, digits = 3)
+  ))
+
+gee_ar_table |>
+  knitr::kable(digits = 3)
+```
+
+### Clinical-Assessment GEE – Empirical Correlations by Lag
+
+```{r}
+#| label: gee2-cor
+#| fig-cap: "Empirical Correlations by Lag"
+#| fig-width: 4
+#| fig-height: 2
+ggplot(dfcorr4, aes(x = lag)) +
+  geom_point(aes(y = correlation), color = "blue", size = 3) +
+  geom_line(aes(y = correlation), color = "blue", linetype = "dashed") +
+  geom_hline(aes(yintercept = ara), color = "red", linetype = "solid", linewidth = 1) +
+  labs(
+    x = "Lag",
+    y = "Correlation",
+    subtitle = "Red line = Working AR1 Correlation"
+  ) +
+  scale_x_continuous(breaks = 1:5) +
+  theme_minimal() 
+```
+
+### Clinical-Assessment GEE – Plot of Centered & Scaled Coefficients
+
+```{r}
+#| label: gee2-rank
+#| fig-cap: "Clinical-Assessment GEE – Plot of Centered & Scaled Coefficients"
+#| fig-width: 6
+#| fig-height: 3
+# Rank most 'influential' factors by absolute value of estimated coefficients, 
+# if possible create a stratified trajectory plot of most important feature
+gee_influence <- gee_ar_table |>
+  mutate(abs = abs(as.numeric(estimate))) |>
+  filter(term != "(Intercept)")
+
+gee_influence %>%
+  mutate(direction = ifelse(as.numeric(estimate) > 0, "Positive", "Negative")) %>%
+  ggplot(aes(x = reorder(term, abs), y = abs, fill = direction)) +
+  geom_col() +
+  coord_flip() +
+  scale_fill_manual(values = c("red", "blue")) +
+  labs(
+    x = "Predictor",
+    y = "Absolute Coefficient",
+    fill = "Direction"
+  ) +
+  theme_minimal()
+```
+
+### Clinical-Assessment GEE – Pearson Residuals vs. Fitted Values
+
+```{r}
+#| label: gee2-pearson
+#| fig-cap: "Clinical-Assessment GEE – Pearson Residuals vs. Fitted Values"
+#| fig-width: 4
+#| fig-height: 2
+# Review residual diagnostics for logistic regression 
+gee_residplot <- clinicdata
+gee_residplot$resid_p <- residuals(gee_ar, type = "pearson")
+gee_residplot$fit <- fitted(gee_ar)
+
+# length(residuals(gee_ar, type = "pearson"))
+# nrow(clinicdata)
+
+ggplot(gee_residplot, aes(x = fit, y = resid_p)) +
+  geom_point(alpha = 0.3) +
+  geom_hline(yintercept = 0, color = "red") +
+  labs(
+       x = "Fitted Value",
+       y = "Pearson Residual") + 
+  theme_minimal()
+
+```
+
+All patient diagnoses are consistent across their visits. I.e., there is almost zero within-person variation (required by GEE), so estimated correlation is =1, GEE equations cannot iteratively update estimates, then all coefficient estimates = 0 & all odds ratios = 1. This explains those constant lines in our residual plot, estimating the same probability of malignancy for all observations with the same response. Since outcome does not change over time / little within-subject variability, GEE is not appropriate. Instead, we can handle each visit as its own independent bernoulli observation with GLM, or instead account for repeated measures with random effects from GLMM.
+
+### Clinical-Assessment GLMM OR estimates and SEs
+
+```{r}
+#| label: glmm2-fit
+#| tbl-cap: "Clinical-Assessment GLMM OR estimates and SEs"
+# Fit GLMM for Model 2
+m2_formula <- Diagnosis_Label ~ Visit_Number + Nodule_Size_mm + Shape_Score + 
+    Margin_Sharpness + Echogenicity_Index + Calcification_Presence + 
+    Texture_Entropy + Capsular_Invasion_Indicator + TSH_Risk_Level + 
+    TPOAb_Probability + Thyroglobulin_Level_Predicted + Hormonal_Change_Rate + (1 | Patient_ID)
+
+
+glmm_model2 <- glmer(m2_formula, 
+                     data = clinicdata_base, 
+                     family = binomial(link = "logit"), 
+                     nAGQ = 0)
+
+# Extract Results
+res_m2 <- tidy(glmm_model2, conf.int = TRUE, exponentiate = TRUE, effects = "fixed") %>%
+  mutate(across(where(is.numeric), \(x) round(x, 3)))
+
+# Display Table
+kable(res_m2)
+```
+
+The GLMM results look almost identical to the baseline GLM, with odds ratios extremely close to 1 and no predictors emerging as significant except for Texture Entropy, which again shows a small negative association with tumor involvement. The random-effects ICC is estimated as **0**, meaning the model found no measurable within-person variability to justify a random intercept—consistent with the fact that tumor status never changes across visits. Because there is essentially no longitudinal signal for the mixed model to capture, the GLMM offers no additional explanatory power beyond the baseline-only GLM.
+
+### Clinical-Assessment GEE – Q-Q plot
+
+```{r}
+#| label: glmm2-qq
+#| fig-cap: "GLMM Q-Q Plot"
+#| fig-width: 4
+#| fig-height: 2
+plot_qq_re(glmm_model2, "Model 2")
+```
+
+The GLMM Q–Q plot shows that the estimated random effects are essentially all zero, with only numerical noise producing the tiny vertical separation between points. This flat pattern reflects the ICC estimate of **0**, meaning the model found no meaningful between-person variability once fixed effects were included.
+
+### Clinical-Assessment GEE – Pearson Residuals vs. Fitted Values
+
+```{r}
+#| label: glmm2-pearson
+#| fig-cap: "Clinical-Assessment GEE – Pearson Residuals vs. Fitted Values"
+#| fig-width: 4
+#| fig-height: 2
+plot_pearson(glmm_model2, "Model 2")
+```
+
+The GLMM Pearson residuals again fall into two tight horizontal bands—one for benign cases and one for malignant cases—indicating that the model predicts nearly the same fitted probability for every observation with the same outcome. Like the self-assessment GLMM, clinical-assessment GLMM doesn't capture any longitudinal trend in data.
+
+# Discussions & Conclusions
+
+## Model comparison: GLM vs. GEE vs. GLMM
+
+Our results agreed to the theories behind those three models (GLM, GEE, GLMM). First, because our outcome does not vary within individuals across visits, we should not expect GEE to perform well. GEE relies on estimating a working correlation structure, but when every subject has the same outcome at every visit, that correlation is effectively one. This causes the correlation parameter to fail and produces unstable or uninformative estimates, exactly as we observed. Next, if we assume that the baseline visit reflects the underlying tumor status at the time it was first clinically relevant, then analyzing just the baseline visit with a GLM gives us valid population-level inference. This avoids the repeated-measures issue entirely and allows the GLM to return meaningful predictors without violating independence assumptions. Finally, while GLMMs can account for repeated measures by including random intercepts, in our case the lack of within-subject variation means those random effects don’t contribute much. Instead, the random intercept simply absorbs between-subject differences. As a result, the GLMM estimates collapse toward the GLM results, offering little additional insight—again consistent with our earlier findings. Altogether, the theoretical expectations fully align with the diagnostics and results: GLM is the most appropriate model for this dataset, GLMM adds minimal benefit, and GEE is not suitable for this problem structure.
+
+Additionally, our data doesn't have a longitudinal outcome(Cancer diagnosis) when we use "visit" as our time variable. This drawback gives us similar results for GLM vs. GLMM. Because the outcome never changes across visits, there’s extremely weak within-patient correlation. That means the random intercept in the GLMM doesn’t actually capture longitudinal structure—it just absorbs the small between-subject differences. As a result, the fixed-effect estimates and standard errors from the GLMM collapse toward those from the GLM. Even though predictors vary from visit to visit, the outcome is basically static, so the correlation structure doesn’t contribute any meaningful information. This is why GLMM didn’t provide any additional explanatory power beyond the marginal GLM.”
+
+## Self vs. Clinical Assessment Model Comparisons
+
+For GLM, the self-assessment model behaved similarly to GEE because it ignored within-patient correlation. This gave smaller standard errors and allowed BMI and family history to appear significant. In contrast, the clinical GLM performed ideally in this dataset. Its estimates were more stable and more interpretable, and key clinical features like texture entropy, capsular invasion, and TSH emerged as strong predictors. For GEE, neither model satisfied the assumptions. In self-assessment, no predictors were significant and the working correlation estimate was essentially one, meaning the covariance structure couldn't be estimated at all. In the clinical model, GEE completely failed — perfect within-patient correlation made the method unusable. For GLMM, the self-assessment model showed more variability because random effects were absorbing patient-level differences, but the overall findings matched GLM. In the clinical model, the random-effects distribution violated normality and the method added little value. So in both cases, GLMM didn’t meaningfully outperform GLM. Overall, this table reinforces the idea that GLM is the most appropriate model for this dataset, while GEE and GLMM struggle due to the lack of within-subject variation.”
+
+Across all modeling approaches, the clinical-assessment model consistently provided stronger and more clinically interpretable signals than the self-assessment model, although both were limited by the static nature of the outcome. For the self-assessment model, the GLM identified only BMI and family history as meaningful predictors, and these effects were small, while both GEE and GLMM failed to detect any substantial associations because the malignancy status never varied across visits. Similarly, in the clinical-assessment model, GEE was unable to estimate a meaningful correlation structure due to perfect within-patient outcome correlation, but the GLM and GLMM identified biologically plausible predictors such as TSH risk level, capsular invasion, calcification, and texture entropy.
+
+## Limitations, Future Work, Final Thoughts
+
+This study has several worth noticing limitations. First, the outcome (thyroid cancer diagnostics) is consistent across visits within each subject. Although the data have a longitudinal structure, the analysis is effectively cross-sectional when modeling cancer diagnostic outcomes. As a result, the estimates from GLM, GEE and GLMM reflect between-patient differences rather than within-patient changes over time.
+
+Second, for the purpose of comparing different models, GLM treated within subject data as independent, which reduced smaller standard errors because identical outcomes were counted multiple times.
+
+Third, diagnostic scans may vary across clinics and devices, which lead to unequal variance from measurement errors.
+
+Finally, mis-classification of the label, noise in self assessment measures and limited dataset documentation may contribute additional bias to the results.
+
+To improve the analysis, the most important step is to address the outcome issue. Since diagnosis status does not change across visits, the current models only estimate between-patient differences. Future work should select an outcome that can vary longitudinally, such as nodule size, stress level, or vascularity score, in order for the GEE and GLMM to produce meaningful longitudinal results.
+
+Beyond outcome selection, other improvements include adding thyroid cancer subtypes to the model, combining self-assessment and clinical models, improving model complexity by adding interactions, and accounting for center differences by split analysis by center. These changes could strengthen the analysis and improve statistical powder.
+
+# References
+
+-   Pellegriti, Gabriella, et al. “Worldwide Increasing Incidence of Thyroid Cancer: Update on Epidemiology and Risk Factors.” Journal of Cancer Epidemiology, vol. 2013, pp. 1–10. DOI.org (Crossref), https://doi.org/10.1155/2013/965212.
+
+-   Usefulness of Different Ultrasound Features of Malignancy in Predicting the Type of Thyroid Lesions: A Meta‑analysis of Prospective Studies. https://doi.org/10.20452/pamw.2132. Accessed 26 Nov. 2025.
+
+-   Gu, Jianhua, et al. “A Machine Learning-Based Approach to Predicting the Malignant and Metastasis of Thyroid Cancer.” Frontiers in Oncology, vol. 12, Dec. 2022, p. 938292. DOI.org (Crossref), https://doi.org/10.3389/fonc.2022.938292.
+
+-   Ross, Douglas S. “Predicting Thyroid Malignancy.” The Journal of Clinical Endocrinology & Metabolism, vol. 91, no. 11, Nov. 2006, pp. 4253–55. DOI.org (Crossref), https://doi.org/10.1210/jc.2006-1772.
+
+-   Wu, MH., Chen, CN., Chen, KY. et al. Quantitative analysis of echogenicity for patients with thyroid nodules. Sci Rep 6, 35632 (2016). https://doi.org/10.1038/srep35632
+
+-   Incoronato, Mariarosaria, et al. “Radiogenomic Analysis of Oncological Data: A Technical Survey.” International Journal of Molecular Sciences, vol. 18, no. 4, Apr. 2017, p. 805. DOI.org (Crossref), https://doi.org/10.3390/ijms18040805.
+
+-   Li, Luchuan, et al. “Positive Thyroid Peroxidase Antibody and Thyroglobulin Antibody Are Associated With Better Clinicopathologic Features of Papillary Thyroid Cancer.” Endocrine Practice, vol. 27, no. 4, Apr. 2021, pp. 306–11. DOI.org (Crossref), https://doi.org/10.1016/j.eprac.2020.10.017.
